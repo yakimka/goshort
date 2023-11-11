@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -12,14 +11,14 @@ import (
 	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/yakimka/goshort/storage"
 )
 
 func main() {
-	db, err := sql.Open("sqlite3", "./urls.sqlite3")
+	storage, err := storage.NewSQLiteURLStorage("./urls.sqlite3")
 	if err != nil {
 		log.Fatal(err)
 	}
-	storage := &SQLiteURLStorage{db: db}
 	storage.Init()
 	urlIdRegexp, err := regexp.Compile(`^[a-zA-Z0-9]{4,12}$`)
 	if err != nil {
@@ -33,7 +32,7 @@ func main() {
 
 type HandlerRegistrator func(pattern string, handler func(http.ResponseWriter, *http.Request))
 
-func registerHandlers(storage URLStorage, urlIdRegexp *regexp.Regexp, registrator HandlerRegistrator) {
+func registerHandlers(store storage.URLStorage, urlIdRegexp *regexp.Regexp, registrator HandlerRegistrator) {
 	redirectHandler := func(w http.ResponseWriter, r *http.Request) {
 		log.Println(r.URL.RawQuery)
 		log.Println(r.URL.Query().Get("redirect"))
@@ -43,13 +42,13 @@ func registerHandlers(storage URLStorage, urlIdRegexp *regexp.Regexp, registrato
 		}
 		id, err := parseUrlId(r.URL.Path, urlIdRegexp)
 		if err != nil {
-			http.Error(w, "Not Found1", http.StatusNotFound)
+			http.Error(w, "Not Found", http.StatusNotFound)
 			return
 		}
-		url, err := storage.Get(id)
+		url, err := store.Get(id)
 		log.Println(url)
 		if err != nil {
-			http.Error(w, "Not Found2", http.StatusNotFound)
+			http.Error(w, "Not Found", http.StatusNotFound)
 			return
 		}
 		redirectParam := strings.ToLower(r.URL.Query().Get("redirect"))
@@ -81,7 +80,7 @@ func registerHandlers(storage URLStorage, urlIdRegexp *regexp.Regexp, registrato
 		if r.Method == http.MethodPost {
 			url := r.FormValue("url")
 			hashedUrl := hashURL(url)
-			storage.Set(hashedUrl, url)
+			store.Set(hashedUrl, url)
 			io.WriteString(w, "http://localhost:8000/"+hashedUrl)
 			return
 		}
@@ -91,50 +90,6 @@ func registerHandlers(storage URLStorage, urlIdRegexp *regexp.Regexp, registrato
 
 	registrator("/", redirectHandler)
 	registrator("/api/v1/urls", createHtmlFormHandler)
-}
-
-type URLStorage interface {
-	Get(id string) (string, error)
-	Set(id, url string) error
-	Init() error
-}
-
-type SQLiteURLStorage struct {
-	db *sql.DB
-}
-
-func (s *SQLiteURLStorage) Get(id string) (string, error) {
-	var url string
-	row := s.db.QueryRow("SELECT url FROM urls WHERE id = ?", id)
-	switch err := row.Scan(&url); err {
-	case sql.ErrNoRows:
-		return "", errors.New("can't find URL")
-	case nil:
-		return url, nil
-	default:
-		return "", errors.Join(errors.New("db error"), err)
-	}
-}
-
-func (s *SQLiteURLStorage) Set(id, url string) error {
-	_, err := s.db.Exec("INSERT INTO urls (id, url) VALUES (?, ?)", id, url)
-	if err != nil {
-		return errors.Join(errors.New("can't insert URL"), err)
-	}
-	return nil
-}
-
-func (s *SQLiteURLStorage) Init() error {
-	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS urls (
-			id TEXT PRIMARY KEY,
-			url TEXT NOT NULL
-		);
-	`)
-	if err != nil {
-		return errors.Join(errors.New("can't create table"), err)
-	}
-	return nil
 }
 
 func parseUrlId(path string, idRegexp *regexp.Regexp) (string, error) {
